@@ -131,5 +131,35 @@ public class DefaultPartitioner implements Partitioner {
 
 }
 ```
+默认分区器实现了分区器接口，主要分区算法是在partion方法中实现的，参数中除了key，还有对应的value参数，也就是说我们也可以通过消息的value来指定消息发到哪个分区
+```java
+public interface Partitioner extends Configurable, Closeable {
+
+    /**
+     * Compute the partition for the given record.
+     *
+     * @param topic The topic name
+     * @param key The key to partition on (or null if no key)
+     * @param keyBytes The serialized key to partition on( or null if no key)
+     * @param value The value to partition on or null
+     * @param valueBytes The serialized value to partition on or null
+     * @param cluster The current cluster metadata
+     */
+    public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster);
+
+    /**
+     * This is called when partitioner is closed.
+     */
+    public void close();
+
+}
+```
+那么，kafka生产者如何对分区选择算法进行定制呢？
+其实很简单：
+1，实现接口 org.apache.kafka.clients.producer.Partitioner
+2，在创建KafkaProducer的时候指定分区器
+```java
+props.setProperty(ProducerConfig.PARTITIONER_CLASS_CONFIG, MockPartitioner.class.getName());
+```
 
 
