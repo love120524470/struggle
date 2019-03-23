@@ -287,7 +287,78 @@ private void sendProduceRequest(long now, int destination, short acks, int timeo
     client.send(clientRequest, now);
 }
 ```
-这里主要做了几件事：将ProducerBatch按分区进行分组，构造成一个分区一个MemoryRecords；然后将这些MemoryRecords以及对应的分区信息构造成一个ClientRequest，通过KafkaClient发送出去
+这里主要做了几件事：将ProducerBatch按分区进行分组，构造成一个分区一个MemoryRecords；然后将这些MemoryRecords以及对应的分区信息构造成一个ClientRequest，通过KafkaClient发送出去，所以我们看下KafkaClient的send方法，实际调用的是
+```java
+private void doSend(ClientRequest clientRequest, boolean isInternalRequest, long now, AbstractRequest request) {
+    String nodeId = clientRequest.destination();
+    RequestHeader header = clientRequest.makeHeader(request.version());
+    //省略部分代码...
+    Send send = request.toSend(nodeId, header);
+    InFlightRequest inFlightRequest = new InFlightRequest(
+            header,
+            clientRequest.createdTimeMs(),
+            clientRequest.destination(),
+            clientRequest.callback(),
+            clientRequest.expectResponse(),
+            isInternalRequest,
+            request,
+            send,
+            now);
+    this.inFlightRequests.add(inFlightRequest);
+    selector.send(inFlightRequest.send);
+}
+
+public Send toSend(String destination, RequestHeader header) {
+    return new NetworkSend(destination, serialize(header));
+}
+```
+这里，创建了一个NetworkSend类，用于发送消息，我们来看下这个NetworkSend类继承了ByteBufferSend，我们来看下ByteBufferSend的结构
+```java
+public class ByteBufferSend implements Send {
+
+    private final String destination;
+    private final int size;
+    protected final ByteBuffer[] buffers;
+    private int remaining;
+    private boolean pending = false;
+
+    public ByteBufferSend(String destination, ByteBuffer... buffers) {
+        this.destination = destination;
+        this.buffers = buffers;
+        for (ByteBuffer buffer : buffers)
+            remaining += buffer.remaining();
+        this.size = remaining;
+    }
+
+    @Override
+    public String destination() {
+        return destination;
+    }
+
+    @Override
+    public boolean completed() {
+        return remaining <= 0 && !pending;
+    }
+
+    @Override
+    public long size() {
+        return this.size;
+    }
+
+    @Override
+    public long writeTo(GatheringByteChannel channel) throws IOException {
+        long written = channel.write(buffers);
+        if (written < 0)
+            throw new EOFException("Wrote negative bytes to channel. This shouldn't happen.");
+        remaining -= written;
+        pending = TransportLayers.hasPendingWrites(channel);
+        return written;
+    }
+}
+```
+我们发现这个ByteBufferSend有个writeTo方法，这个方法就是把实际的消息写入Channel发送到远程
+
+另外，在前面方法发送那里，返回给调用方的是一个Future对象方法，大家可以通过那个future获取到实际的执行结果
 
 
 
