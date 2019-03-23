@@ -1,4 +1,4 @@
-### kafka如何发送消息
+### kafka如何发送消息的呢
 
 #### kafka发送消息的流程
 1，生产者客户端应用程序产生消息
@@ -161,5 +161,134 @@ public interface Partitioner extends Configurable, Closeable {
 ```java
 props.setProperty(ProducerConfig.PARTITIONER_CLASS_CONFIG, MockPartitioner.class.getName());
 ```
+
+然后，我们接着来看消息发送消息的过程，调用了org.apache.kafka.clients.producer.internals.RecordAccumulator#append
+```java
+public RecordAppendResult append(TopicPartition tp,
+                                 long timestamp,
+                                 byte[] key,
+                                 byte[] value,
+                                 Header[] headers,
+                                 Callback callback,
+                                 long maxTimeToBlock) throws InterruptedException {
+    ByteBuffer buffer = null;
+    try {
+        //从发送队列中找到对应分区的发送ProducerBatch队列
+        Deque<ProducerBatch> dq = getOrCreateDeque(tp);
+        synchronized (dq) {
+            //将当前消息append到最后一个ProducerBatch的消息队列
+            RecordAppendResult appendResult = tryAppend(timestamp, key, value, headers, callback, dq);
+            if (appendResult != null)
+                return appendResult;
+        }
+        //省略部分代码...
+    } finally { 
+        //省略部分代码...
+    }
+}
+```
+好，这里我们看下tryAppend做了哪些事情
+```java
+private RecordAppendResult tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers,
+                                     Callback callback, Deque<ProducerBatch> deque) {
+    ProducerBatch last = deque.peekLast();
+    if (last != null) {
+        FutureRecordMetadata future = last.tryAppend(timestamp, key, value, headers, callback, time.milliseconds());
+        if (future == null)
+            last.closeForRecordAppends();
+        else
+            return new RecordAppendResult(future, deque.size() > 1 || last.isFull(), false);
+    }
+    return null;
+}
+
+public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers, Callback callback, long now) {
+    if (!recordsBuilder.hasRoomFor(timestamp, key, value, headers)) {
+        return null;
+    } else {
+        Long checksum = this.recordsBuilder.append(timestamp, key, value, headers);
+        //省略部分代码...
+        FutureRecordMetadata future = new FutureRecordMetadata(this.produceFuture, this.recordCount,
+                                                               timestamp, checksum,
+                                                               key == null ? -1 : key.length,
+                                                               value == null ? -1 : value.length);
+        //省略部分代码...
+        return future;
+    }
+}
+
+//recordsBuilder.append最后调用的是appendDefaultRecord方法
+private void appendDefaultRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value,
+                                 Header[] headers) throws IOException {
+    //省略部分代码...
+    int sizeInBytes = DefaultRecord.writeTo(appendStream, offsetDelta, timestampDelta, key, value, headers);
+    //省略部分代码...
+}
+```
+最终，这个消息的会被写入到appendStream里面，然后就返回了，那么谁来发送这个DataOutputStream中的消息数据呢？
+这里，我们想起来在创建KafkaProducer的时候，里面有个Sender类型的成员org.apache.kafka.clients.producer.internals.Sender，这个Sender实现了Runnable接口，那么我看下run()方法做了哪些事情呢？
+```java
+public void run() {
+    while (running) {
+        try {
+            run(time.milliseconds());
+        } catch (Exception e) {
+            log.error("Uncaught error in kafka producer I/O thread: ", e);
+        }
+    }
+    //省略部分代码...
+}
+//这里run方法实际调用了另外一个run方法
+void run(long now) {
+    //省略部分代码...
+    long pollTimeout = sendProducerData(now);
+    client.poll(pollTimeout, now);
+}
+
+private long sendProducerData(long now) {
+    Cluster cluster = metadata.fetch();
+    //省略部分代码...
+    RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
+    //省略部分代码...
+    Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(cluster, result.readyNodes,
+            this.maxRequestSize, now);
+    //省略部分代码...
+    sendProduceRequests(batches, now);
+    //省略部分代码...
+    return pollTimeout;
+}
+```
+sendProducerData方法里面先从元数据中获取当前集群信息，然后在消息聚合器RecordAccumulator中筛选出准备就绪（有些节点可能展示不可用），可发送的节点Broker，然后在消息聚合器RecordAccumulator筛选出节点对应的ProducerBatch队列
+接下来，我们来看下真正发送消息sendProduceRequests这部分，实际上调用的是另外一个方法sendProduceRequest
+```java
+private void sendProduceRequest(long now, int destination, short acks, int timeout, List<ProducerBatch> batches) {
+    //省略部分代码...
+    Map<TopicPartition, MemoryRecords> produceRecordsByPartition = new HashMap<>(batches.size());
+    final Map<TopicPartition, ProducerBatch> recordsByPartition = new HashMap<>(batches.size());
+    //省略部分代码...
+    for (ProducerBatch batch : batches) {
+        TopicPartition tp = batch.topicPartition;
+        MemoryRecords records = batch.records();
+        //省略部分代码...
+        produceRecordsByPartition.put(tp, records);
+        recordsByPartition.put(tp, batch);
+    }
+    //省略部分代码...
+    ProduceRequest.Builder requestBuilder = ProduceRequest.Builder.forMagic(minUsedMagic, acks, timeout,
+            produceRecordsByPartition, transactionalId);
+    RequestCompletionHandler callback = new RequestCompletionHandler() {
+        public void onComplete(ClientResponse response) {
+            handleProduceResponse(response, recordsByPartition, time.milliseconds());
+        }
+    };
+    
+    String nodeId = Integer.toString(destination);
+    ClientRequest clientRequest = client.newClientRequest(nodeId, requestBuilder, now, acks != 0, callback);
+    client.send(clientRequest, now);
+}
+```
+这里主要做了几件事：将ProducerBatch按分区进行分组，构造成一个分区一个MemoryRecords；然后将这些MemoryRecords以及对应的分区信息构造成一个ClientRequest，通过KafkaClient发送出去
+
+
 
 
