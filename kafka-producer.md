@@ -1,10 +1,10 @@
 ### kafka如何发送消息的呢
 
 #### kafka发送消息的流程
-1，生产者客户端应用程序产生消息
-2，客户端连接对象将消息包装到请求中，发送到服务端
-3，服务端连接对象负责接收请求，并将消息以文件形式存储
-4，服务端返回响应结果给生产者客户端
+1，生产者客户端应用程序产生消息<br>
+2，客户端连接对象将消息包装到请求中，发送到服务端<br>
+3，服务端连接对象负责接收请求，并将消息以文件形式存储<br>
+4，服务端返回响应结果给生产者客户端<br>
 
 #### kafka发送消息demo
 首先我们来看下kafka发送消息的代码
@@ -40,7 +40,7 @@ public class Producer extends Thread {
     }
 }
 ```
-生产者客户端对象KafkaProducer的send方法的处理逻辑是：首先序列化消息的key和value（消息必须序列化成二进制流的形式才能在网络中传输），然后为每一条消息息选择对应的分区（表示要将消息存储至Kafka集群的哪个节点上），最后通知发送线程发送消息。所以大家可以明白kafka使用独立的线程发送消息。
+生产者客户端对象KafkaProducer的send方法的处理逻辑是：<br> 首先序列化消息的key和value（消息必须序列化成二进制流的形式才能在网络中传输），然后为每一条消息息选择对应的分区（表示要将消息存储至Kafka集群的哪个节点上），最后通知发送线程发送消息。所以大家可以明白kafka使用独立的线程发送消息。
 那我们来看下send方法，底层调用的是doSend方法
 ```java
 private Future<RecordMetadata> doSend(ProducerRecord<K, V> record, Callback callback) {
@@ -77,7 +77,6 @@ private Future<RecordMetadata> doSend(ProducerRecord<K, V> record, Callback call
 }
 ```
 从以上代码中，我们可以得知kafka消息发送到kafka的哪个分区，是在客户端发送的时候就决定好了，这样的一种思想是依赖倒置，集群中数据分布不是由kafka集群来决定，而是由客户端来决定，这样的好处是消息负载均衡方式更加灵活，而且broker端也更简单，只需要把消息直接存储就行，不需要考虑数据该如何负载均衡。
-
 
 #### 发送消息的分区路由策略
 那么问题来，发送消息时，kafka客户端如何为消息选择分区的呢？前面使用到了一个partition方法，方法的实现：
@@ -154,17 +153,16 @@ public class DefaultPartitioner implements Partitioner {
 
 }
 ```
-默认分区器实现了分区器接口的partition方法，分区算法是在partion方法中实现的，参数中除了key，还有对应的value参数，也就是说我们也可以通过消息的value来指定消息发到哪个分区。
-
-那么我们自定义一个分区器，实现了partition方法，怎么在生产者代码中使用呢？
+默认分区器实现了分区器接口的partition方法，分区算法是在partion方法中实现的，参数中除了key，还有对应的value参数，也就是说我们也可以通过消息的value来指定消息发到哪个分区。<br>
+<br>
+那么我们自定义一个分区器，实现了partition方法，怎么在生产者代码中使用呢？<br>
 其实很简单，只需要在创建KafkaProducer的时候指定分区器就行了
 ```java
 props.setProperty(ProducerConfig.PARTITIONER_CLASS_CONFIG, MockPartitioner.class.getName());
 ```
 
-
 #### 生产者消息的按分区聚合
-生产者发送消息时，不是来一条就发送一条，是一批一批发送的，这个是与RocketMQ的不同点
+生产者发送消息时，不是来一条就发送一条，是一批一批发送的，这个是与RocketMQ的不同点。<br>
 然后，我们接着来看消息发送消息的过程，调用了org.apache.kafka.clients.producer.internals.RecordAccumulator#append
 ```java
 public RecordAppendResult append(TopicPartition tp,
@@ -190,8 +188,8 @@ public RecordAppendResult append(TopicPartition tp,
     }
 }
 ```
-好，这里返回了一个RecordAppendResult对象，其中包含了Future的子类FutureRecordMetadata，用于返回消息发送的结果。
-记下来我们看下tryAppend做了哪些事情
+好，这里返回了一个RecordAppendResult对象，其中包含了Future的子类FutureRecordMetadata，用于返回消息发送的结果。<br>
+接下来我们看下tryAppend做了哪些事情
 ```java
 private RecordAppendResult tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers,
                                      Callback callback, Deque<ProducerBatch> deque) {
@@ -232,8 +230,8 @@ private void appendDefaultRecord(long offset, long timestamp, ByteBuffer key, By
 
 
 #### 消息生产与发送的解耦
-在RocketMQ里面，发送消息是构造好以后，直接就发送了，但是kafka不一样，构造消息的是一个线程，只关心消息按照分区进行聚合，发送消息的是另一个线程，只关心如何把聚合好的消息发送出去。由于使用了一个发送线程，使发送工作异步化了，这也是kafka高吞吐的另外一个原因。
-接着上面咱们继续，这个消息的会被写入到appendStream里面，然后就返回了一个FutureRecordMetadata对象（是Future的子类，可以获取到broker的返回结果），那么谁来发送这个DataOutputStream中的消息数据呢？
+在RocketMQ里面，发送消息是构造好以后，直接就发送了，但是kafka不一样，构造消息的是一个线程，只关心消息按照分区进行聚合，发送消息的是另一个线程，只关心如何把聚合好的消息发送出去。由于使用了一个发送线程，使发送工作异步化了，这也是kafka高吞吐的另外一个原因。<br>
+接着上面咱们继续，这个消息的会被写入到appendStream里面，然后就返回了一个FutureRecordMetadata对象（是Future的子类，可以获取到broker的返回结果），那么谁来发送这个DataOutputStream中的消息数据呢？<br>
 这里，我们想起来在创建KafkaProducer的时候，里面有个Sender类型的成员sender，这个Sender实现了Runnable接口，那么我看下run()方法做了哪些事情呢？
 ```java
 //这里run方法实际调用了另外一个run方法
@@ -256,7 +254,7 @@ private long sendProducerData(long now) {
     return pollTimeout;
 }
 ```
-sendProducerData方法里面先从元数据中获取当前集群信息，然后在消息聚合器RecordAccumulator中筛选出准备就绪（节点的有些leader可能超过发送限制，或者正在发送中）可发送的节点Broker，然后在消息聚合器RecordAccumulator筛选出节点对应的ProducerBatch队列。
+sendProducerData方法里面先从元数据中获取当前集群信息，然后在消息聚合器RecordAccumulator中筛选出准备就绪（节点的有些leader可能超过发送限制，或者正在发送中）可发送的节点Broker，然后在消息聚合器RecordAccumulator筛选出节点对应的ProducerBatch队列。<br>
 接下来，我们来看下真正发送消息sendProduceRequests这部分，实际上调用的是另外一个方法sendProduceRequest
 ```java
 private void sendProduceRequest(long now, int destination, short acks, int timeout, List<ProducerBatch> batches) {
@@ -316,7 +314,7 @@ public static class Builder extends AbstractRequest.Builder<ProduceRequest> {
     //省略部分代码...
 }            
 ```
-这里主要做了几件事：将ProducerBatch按分区进行分组，构造成一个分区一个MemoryRecords。
+这里主要做了几件事：将ProducerBatch按分区进行分组，构造成一个分区一个MemoryRecords。<br>
 这里使用到了一个建造者模式，构造了一个ProduceRequest的builder，并在doSend方法中将这些MemoryRecords以及对应的分区信息构造成准备发送的ProduceRequest，并通过KafkaClient发送出去，所以我们看下KafkaClient的send方法，实际调用的是doSend方法
 ```java
 private void doSend(ClientRequest clientRequest, boolean isInternalRequest, long now) {
