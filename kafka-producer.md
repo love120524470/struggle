@@ -162,8 +162,8 @@ props.setProperty(ProducerConfig.PARTITIONER_CLASS_CONFIG, MockPartitioner.class
 ```
 
 #### 生产者消息的按分区聚合
-生产者发送消息时，不是来一条就发送一条，是一批一批发送的，这个是与RocketMQ的不同点。<br>
-然后，我们接着来看消息发送消息的过程，调用了org.apache.kafka.clients.producer.internals.RecordAccumulator#append
+生产者发送消息时，不是来一条就发送一条，是一批一批发送的，这个是与RocketMQ的不同点。那么这就涉及到一个情况，需要将要发送的一批消息按照分区维度进行分类，因为分区是数据存储的最小分类<br>
+那么，我们接着来看消息发送消息的过程，调用了org.apache.kafka.clients.producer.internals.RecordAccumulator#append方法
 ```java
 public RecordAppendResult append(TopicPartition tp,
                                  long timestamp,
@@ -188,6 +188,8 @@ public RecordAppendResult append(TopicPartition tp,
     }
 }
 ```
+看到这里，相信大家已经有一个很清晰的思路了，客户端会先将消息按照分区进行分组，然后再发送到broker，如下图：<br>
+
 好，这里返回了一个RecordAppendResult对象，其中包含了Future的子类FutureRecordMetadata，用于返回消息发送的结果。<br>
 接下来我们看下tryAppend做了哪些事情
 ```java
@@ -227,7 +229,7 @@ private void appendDefaultRecord(long offset, long timestamp, ByteBuffer key, By
     //省略部分代码...
 }
 ```
-
+从上可以发现最终消息是写入到ProducerBatch的MemoryRecordsBuilder的ByteBufferOutputStream里面的，发送的时候，会将流中的数据转换成ByteBuffer发送到Channel中去。
 
 #### 消息生产与发送的解耦
 在RocketMQ里面，发送消息是构造好以后，直接就发送了，但是kafka不一样，构造消息的是一个线程，只关心消息按照分区进行聚合，发送消息的是另一个线程，只关心如何把聚合好的消息发送出去。由于使用了一个发送线程，使发送工作异步化了，这也是kafka高吞吐的另外一个原因。<br>
@@ -353,6 +355,7 @@ public Send toSend(String destination, RequestHeader header) {
     return new NetworkSend(destination, serialize(header));
 }
 ```
+这里，客户端会把按照分区维护的消息分组，再以broker维度进行一次聚合，一次性全部发送到broker，broker上所有分区共用同一个Channel，不用每个分区都建立一个Channel，发送n次，提高了发送效率。<br>
 这里，创建了一个NetworkSend类，用于发送消息，我们来看下这个NetworkSend类继承了ByteBufferSend，我们来看下ByteBufferSend的结构
 ```java
 public class ByteBufferSend implements Send {
